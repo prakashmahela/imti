@@ -1,0 +1,260 @@
+// Frontend REST API Client wrappers
+const getApiUrl = (): string => {
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+  if (!hostname || hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.run.app')) {
+    return '';
+  }
+  return 'https://ais-pre-o3cc2z6335vxmue6hddp6v-1017130358436.asia-southeast1.run.app';
+};
+
+export const API_URL = getApiUrl();
+
+export interface ApiUser {
+  id: string;
+  name: string;
+  email: string;
+  role: 'USER' | 'ADMIN';
+  createdAt?: string;
+}
+
+export interface ApiOrder {
+  id: string;
+  customerName: string;
+  email: string;
+  address: string;
+  city: string;
+  postalCode: string;
+  total: number;
+  status: 'PENDING' | 'PROCESSING' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED';
+  paymentMethod: 'card' | 'cod' | 'upi';
+  paymentStatus: 'PENDING' | 'PAID' | 'FAILED';
+  trackingNumber: string;
+  createdAt: string;
+  items: any[];
+}
+
+export class ApiClient {
+  private static getToken(): string | null {
+    return localStorage.getItem('society_auth_token');
+  }
+
+  public static setToken(token: string) {
+    localStorage.setItem('society_auth_token', token);
+  }
+
+  public static clearToken() {
+    localStorage.removeItem('society_auth_token');
+  }
+
+  public static getUser(): ApiUser | null {
+    const raw = localStorage.getItem('society_auth_user');
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  public static setUser(user: ApiUser) {
+    localStorage.setItem('society_auth_user', JSON.stringify(user));
+  }
+
+  public static clearUser() {
+    localStorage.removeItem('society_auth_user');
+  }
+
+  private static async request(endpoint: string, options: RequestInit = {}): Promise<any> {
+    const token = this.getToken();
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    };
+
+    const config = {
+      ...options,
+      headers: {
+        ...headers,
+        ...options.headers
+      }
+    };
+
+    const res = await fetch(`${API_URL}${endpoint}`, config);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Server request failed.');
+    }
+    return data;
+  }
+
+  // Auth
+  public static async login(credentials: { email: string; passwordHash?: string; password?: string }): Promise<{ token: string; user: ApiUser }> {
+    const data = await this.request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: credentials.email, password: credentials.password || credentials.passwordHash })
+    });
+    this.setToken(data.token);
+    this.setUser(data.user);
+    return data;
+  }
+
+  public static async register(userData: { name: string; email: string; password?: string }): Promise<{ token: string; user: ApiUser }> {
+    const data = await this.request('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(userData)
+    });
+    this.setToken(data.token);
+    this.setUser(data.user);
+    return data;
+  }
+
+  public static logout() {
+    this.clearToken();
+    this.clearUser();
+  }
+
+  public static async getProfile(): Promise<{ user: ApiUser; orders: ApiOrder[]; cart: any[]; wishlist: string[] }> {
+    return this.request('/api/auth/profile');
+  }
+
+  public static async changePassword(passwordData: { currentPassword?: string; newPassword?: string }): Promise<{ message: string }> {
+    return this.request('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify(passwordData)
+    });
+  }
+
+  // Products
+  public static async getProducts(params?: { search?: string; category?: string; sort?: string }): Promise<any[]> {
+    const query = new URLSearchParams();
+    if (params?.search) query.append('search', params.search);
+    if (params?.category) query.append('category', params.category);
+    if (params?.sort) query.append('sort', params.sort);
+
+    const queryString = query.toString();
+    return this.request(`/api/products?${queryString}`);
+  }
+
+  public static async createProduct(productData: any): Promise<any> {
+    return this.request('/api/products/admin/create', {
+      method: 'POST',
+      body: JSON.stringify(productData)
+    });
+  }
+
+  public static async updateProduct(id: string, productData: any): Promise<any> {
+    return this.request(`/api/products/admin/update/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(productData)
+    });
+  }
+
+  public static async deleteProduct(id: string): Promise<any> {
+    return this.request(`/api/products/admin/delete/${id}`, {
+      method: 'DELETE'
+    });
+  }
+
+  // Cart / Wishlist Remote Backing
+  public static async saveCartRemote(items: any[]): Promise<any> {
+    if (!this.getToken()) return;
+    return this.request('/api/cart/save', {
+      method: 'POST',
+      body: JSON.stringify({ items })
+    });
+  }
+
+  public static async saveWishlistRemote(productIds: string[]): Promise<any> {
+    if (!this.getToken()) return;
+    return this.request('/api/wishlist/save', {
+      method: 'POST',
+      body: JSON.stringify({ productIds })
+    });
+  }
+
+  // Checkout
+  public static async applyCoupon(code: string): Promise<{ discountPercent: number }> {
+    return this.request('/api/checkout/apply-coupon', {
+      method: 'POST',
+      body: JSON.stringify({ code })
+    });
+  }
+
+  public static async placeOrder(orderData: any): Promise<any> {
+    return this.request('/api/checkout/order', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...orderData,
+        userId: this.getUser()?.id || null
+      })
+    });
+  }
+
+  // Admin
+  public static async getAllOrders(): Promise<ApiOrder[]> {
+    return this.request('/api/orders/all');
+  }
+
+  public static async updateOrderStatus(id: string, status: string, paymentStatus?: string): Promise<any> {
+    return this.request(`/api/orders/${id}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status, paymentStatus })
+    });
+  }
+
+  public static async getContactMessages(): Promise<any[]> {
+    return this.request('/api/admin/contact');
+  }
+
+  public static async getNewsletterSubscribers(): Promise<any[]> {
+    return this.request('/api/admin/newsletter');
+  }
+
+  // Reviews
+  public static async submitReview(productId: string, review: { name: string; rating: number; comment: string }): Promise<any> {
+    return this.request(`/api/products/${productId}/review`, {
+      method: 'POST',
+      body: JSON.stringify(review)
+    });
+  }
+
+  // Blogs
+  public static async getBlogs(): Promise<any[]> {
+    return this.request('/api/blogs');
+  }
+
+  public static async createBlog(blogData: any): Promise<any> {
+    return this.request('/api/blogs/admin/create', {
+      method: 'POST',
+      body: JSON.stringify(blogData)
+    });
+  }
+
+  public static async updateBlog(id: string, blogData: any): Promise<any> {
+    return this.request(`/api/blogs/admin/update/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(blogData)
+    });
+  }
+
+  public static async deleteBlog(id: string): Promise<any> {
+    return this.request(`/api/blogs/admin/delete/${id}`, {
+      method: 'DELETE'
+    });
+  }
+
+  // Communication
+  public static async submitContact(name: string, email: string, message: string): Promise<any> {
+    return this.request('/api/contact', {
+      method: 'POST',
+      body: JSON.stringify({ name, email, message })
+    });
+  }
+
+  public static async submitNewsletter(email: string): Promise<any> {
+    return this.request('/api/newsletter', {
+      method: 'POST',
+      body: JSON.stringify({ email })
+    });
+  }
+}
